@@ -82,7 +82,7 @@ db_client = None
 db_collection = None
 if MONGO_URI:
     try:
-        db_client = pymongo.MongoClient(MONGO_URI)
+        db_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         mongo_db = db_client["telegram_bot"]
         db_collection = mongo_db["main_data"]
         log.info("MongoDB Connected Successfully!")
