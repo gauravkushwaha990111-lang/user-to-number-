@@ -7,6 +7,8 @@ import hashlib
 import time
 import random
 import io
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, date
 from dotenv import load_dotenv  # type: ignore
 from telegram import (  # type: ignore
@@ -1502,7 +1504,19 @@ async def inlineQuery(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def errorHandler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     log.error("Update %s caused error: %s", update, ctx.error)
 
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is running successfully on Render Free Tier!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    HTTPServer(('0.0.0.0', port), DummyHandler).serve_forever()
+
 def main():
+    threading.Thread(target=run_dummy_server, daemon=True).start()
     app = Application.builder().token(BOT_TOKEN).build()
 
     adminConv = ConversationHandler(
