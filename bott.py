@@ -1651,6 +1651,7 @@ def main():
 
     log.info("Bot running")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+    os._exit(0)
 
 
 if __name__ == "__main__":
