@@ -11,6 +11,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, date
 from dotenv import load_dotenv  # type: ignore
+import pymongo  # type: ignore
 from telegram import (  # type: ignore
     Update,
     InlineKeyboardButton,
@@ -40,6 +41,7 @@ BOT_TOKEN        = os.getenv("BOT_TOKEN", "")
 INFO_BOT_TOKEN   = os.getenv("INFO_BOT_TOKEN", "")
 ADMIN_PASS_HASH  = hashlib.sha256(os.getenv("ADMIN_PASSWORD", "admin").encode()).hexdigest()
 MAINT_PASS_HASH  = hashlib.sha256(os.getenv("MAINT_PASSWORD", "maint").encode()).hexdigest()
+MONGO_URI        = os.getenv("MONGO_URI", "mongodb+srv://rdp96869_db_user:3TgbDUDy9yE66fTP@usertonumber.k7gpo0m.mongodb.net/?appName=usertonumber")
 
 # ── Your TGOSINT API ──────────────────────────────────────────────────────────
 TGOSINT_URL = os.getenv("TGOSINT_URL", "https://tgosint.vercel.app/")
@@ -75,25 +77,66 @@ AWAIT_PROMO_MSG  = 7
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# ── MongoDB Setup ────────────────────────────────────────────────────────────
+db_client = None
+db_collection = None
+if MONGO_URI:
+    try:
+        db_client = pymongo.MongoClient(MONGO_URI)
+        mongo_db = db_client["telegram_bot"]
+        db_collection = mongo_db["main_data"]
+        log.info("MongoDB Connected Successfully!")
+    except Exception as e:
+        log.error(f"MongoDB Connection Error: {e}")
+# ─────────────────────────────────────────────────────────────────────────────
 
 def loadDb():
-    if not os.path.exists(DB_FILE):
-        return {"users": {}, "recentLookups": [], "globalStats": {}, "adminSessions": [], "maintenance": False, "admins": []}
-    with open(DB_FILE, "r") as f:
-        data = json.load(f)
-    if "maintenance" not in data:
-        data["maintenance"] = False
-    if "admins" not in data:
-        data["admins"] = []
-    if "recentLookups" not in data:
-        data["recentLookups"] = []
-    if "globalStats" not in data:
-        data["globalStats"] = {"totalLookups": 0, "successfulLookups": 0, "todayDate": date.today().isoformat(), "todayLookups": 0}
+    data = None
+    if db_collection is not None:
+        try:
+            data = db_collection.find_one({"_id": "bot_db"})
+        except Exception as e:
+            log.error(f"MongoDB Load Error: {e}")
+
+    # Fallback / Migration from local db.json
+    if data is None and os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                data = json.load(f)
+            # Migrate to MongoDB immediately if connected
+            if db_collection is not None and data:
+                data["_id"] = "bot_db"
+                db_collection.replace_one({"_id": "bot_db"}, data, upsert=True)
+        except Exception:
+            pass
+
+    if not data:
+        data = {"users": {}, "recentLookups": [], "globalStats": {}, "adminSessions": [], "maintenance": False, "admins": []}
+
+    # Ensure required keys exist
+    if "maintenance" not in data: data["maintenance"] = False
+    if "admins" not in data: data["admins"] = []
+    if "recentLookups" not in data: data["recentLookups"] = []
+    if "globalStats" not in data: data["globalStats"] = {"totalLookups": 0, "successfulLookups": 0, "todayDate": date.today().isoformat(), "todayLookups": 0}
+    
     return data
 
 def saveDb(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    if db_collection is not None:
+        try:
+            data["_id"] = "bot_db"
+            db_collection.replace_one({"_id": "bot_db"}, data, upsert=True)
+        except Exception as e:
+            log.error(f"MongoDB Save Error: {e}")
+            
+    # Local backup just in case
+    try:
+        with open(DB_FILE, "w") as f:
+            d_copy = data.copy()
+            if "_id" in d_copy: del d_copy["_id"]
+            json.dump(d_copy, f, indent=2)
+    except Exception:
+        pass
 
 def registerUser(userId, username, firstName, referrerId=None):
     db = loadDb()
