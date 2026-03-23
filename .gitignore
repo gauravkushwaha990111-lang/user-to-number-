@@ -1,5 +1,8 @@
-# Secrets
+# Security & Database
 .env
-# Database
 db.json
+
+# Python Caches
 __pycache__/
+*.pyc
+*.pyo

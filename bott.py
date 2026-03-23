@@ -4,12 +4,9 @@ import aiohttp  # type: ignore
 import json
 import os
 import hashlib
-import threading
 import time
 import random
 import io
-import urllib.request
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, date
 from dotenv import load_dotenv  # type: ignore
 from telegram import (  # type: ignore
@@ -39,16 +36,17 @@ load_dotenv()
 
 BOT_TOKEN        = os.getenv("BOT_TOKEN", "")
 INFO_BOT_TOKEN   = os.getenv("INFO_BOT_TOKEN", "")
-ADMIN_PASS_HASH  = hashlib.sha256(os.getenv("ADMIN_PASSWORD", "sujoy").encode()).hexdigest()
-MAINT_PASS_HASH  = hashlib.sha256(os.getenv("MAINT_PASSWORD", "pari").encode()).hexdigest()
+ADMIN_PASS_HASH  = hashlib.sha256(os.getenv("ADMIN_PASSWORD", "admin").encode()).hexdigest()
+MAINT_PASS_HASH  = hashlib.sha256(os.getenv("MAINT_PASSWORD", "maint").encode()).hexdigest()
 
 # ── Your TGOSINT API ──────────────────────────────────────────────────────────
-TGOSINT_URL = "https://tgosint.vercel.app/"
-TGOSINT_KEY = os.getenv("TGOSINT_KEY", "drazeX")
+TGOSINT_URL = os.getenv("TGOSINT_URL", "https://tgosint.vercel.app/")
+TGOSINT_KEY = os.getenv("TGOSINT_KEY", "YOUR_API_KEY")
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Bot Channels For Force Sub ────────────────────────────────────────────────
-CHANNELS = ["@flinsbots", "@devg4urav"]
+_channels_env = os.getenv("CHANNELS", "@flinsbots,@devg4urav")
+CHANNELS = [x.strip() for x in _channels_env.split(",") if x.strip()]
 
 EFFECT_IDS = [
     "5046509860389126442", # 🎉 Party Popper
@@ -57,10 +55,9 @@ EFFECT_IDS = [
     "5107584321108051014", # 👍 Thumbs Up
 ]
 
-# ── Permanent Admins () ───────────────
-# Fetch from env, split by comma, convert to integers
-ADMIN_IDS_ENV = os.getenv("ADMIN_IDS", "6155928882,961369378,123456789")
-ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_ENV.split(",") if x.strip().isdigit()]
+# ── Permanent Admins ──────────────────────────────────────────────────────────
+_admin_ids_env = os.getenv("ADMIN_IDS", "6155928882")
+ADMIN_IDS = [int(x.strip()) for x in _admin_ids_env.split(",") if x.strip().isdigit()]
 
 DB_FILE = "db.json"
 
@@ -71,6 +68,7 @@ AWAIT_ADMIN_PW   = 2
 AWAIT_MAINT_PW   = 4
 AWAIT_ADD_ADMIN_PW = 5
 AWAIT_DEL_ADMIN_PW = 6
+AWAIT_PROMO_MSG  = 7
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -78,13 +76,17 @@ log = logging.getLogger(__name__)
 
 def loadDb():
     if not os.path.exists(DB_FILE):
-        return {"users": {}, "lookups": [], "adminSessions": [], "maintenance": False, "admins": []}
+        return {"users": {}, "recentLookups": [], "globalStats": {}, "adminSessions": [], "maintenance": False, "admins": []}
     with open(DB_FILE, "r") as f:
         data = json.load(f)
     if "maintenance" not in data:
         data["maintenance"] = False
     if "admins" not in data:
         data["admins"] = []
+    if "recentLookups" not in data:
+        data["recentLookups"] = []
+    if "globalStats" not in data:
+        data["globalStats"] = {"totalLookups": 0, "successfulLookups": 0, "todayDate": date.today().isoformat(), "todayLookups": 0}
     return data
 
 def saveDb(data):
@@ -110,8 +112,8 @@ def registerUser(userId, username, firstName, referrerId=None):
         }
     else:
         db["users"][uid]["lastSeen"] = now.isoformat()
-        if username:
-            db["users"][uid]["username"] = username
+        db["users"][uid]["username"] = username or ""
+        db["users"][uid]["firstName"] = firstName or ""
         if "balance" not in db["users"][uid]:
             db["users"][uid]["balance"] = 2
         if "referrals" not in db["users"][uid]:
@@ -133,11 +135,33 @@ def registerUser(userId, username, firstName, referrerId=None):
 def logLookup(userId, username, firstName, query, result, success):
     db = loadDb()
     uid = str(userId)
+    todayStr = date.today().isoformat()
+
+    # Global stats update
+    gStats = db.get("globalStats", {"totalLookups": 0, "successfulLookups": 0, "todayDate": todayStr, "todayLookups": 0})
+    if gStats.get("todayDate") != todayStr:
+        gStats["todayDate"] = todayStr
+        gStats["todayLookups"] = 0
+        
+    gStats["totalLookups"] = gStats.get("totalLookups", 0) + 1
+    gStats["todayLookups"] = gStats.get("todayLookups", 0) + 1
+    if success:
+        gStats["successfulLookups"] = gStats.get("successfulLookups", 0) + 1
+    db["globalStats"] = gStats
+
+    # User stats update
     if uid in db["users"]:
         db["users"][uid]["totalLookups"] += 1
         db["users"][uid]["lastSeen"] = datetime.now().isoformat()
+        if success:
+            db["users"][uid]["successfulLookups"] = db["users"][uid].get("successfulLookups", 0) + 1
+        if db["users"][uid].get("lastLookupDate") != todayStr:
+            db["users"][uid]["lastLookupDate"] = todayStr
+            db["users"][uid]["todayLookups"] = 0
+        db["users"][uid]["todayLookups"] = db["users"][uid].get("todayLookups", 0) + 1
+
     p_info = result.get("phone_info") or result if result else {}
-    db["lookups"].append({
+    db.setdefault("recentLookups", []).append({
         "ts": datetime.now().isoformat(),
         "userId": userId,
         "username": username or "",
@@ -147,22 +171,31 @@ def logLookup(userId, username, firstName, query, result, success):
         "phone": str(p_info.get("number") or p_info.get("phone") or ""),
         "country": str(p_info.get("country") or ""),
     })
+    
+    # Cap recent lookups to 50 items to save space
+    if len(db["recentLookups"]) > 50:
+        db["recentLookups"] = db["recentLookups"][-50:]
+        
+    # Remove old massive lookups array to free disk space immediately
+    if "lookups" in db:
+        del db["lookups"]
+
     saveDb(db)
 
 def getUserStats(userId):
     db = loadDb()
     uid = str(userId)
     user = db["users"].get(uid, {})
-    userLookups = [l for l in db["lookups"] if l["userId"] == userId]
     todayStr = date.today().isoformat()
-    todayLookups = [l for l in userLookups if l["ts"].startswith(todayStr)]
-    successfulLookups = [l for l in userLookups if l["success"]]
+    
+    todayLookups = user.get("todayLookups", 0) if user.get("lastLookupDate") == todayStr else 0
+    
     return {
         "total": user.get("totalLookups", 0),
         "balance": user.get("balance", 0),
         "referrals": user.get("referrals", 0),
-        "today": len(todayLookups),
-        "successful": len(successfulLookups),
+        "today": todayLookups,
+        "successful": user.get("successfulLookups", 0),
         "joinedAt": user.get("joinedAt", "N/A"),
         "lastSeen": user.get("lastSeen", "N/A"),
     }
@@ -170,18 +203,17 @@ def getUserStats(userId):
 def getAdminStats():
     db = loadDb()
     totalUsers = len(db["users"])
-    totalLookups = len(db["lookups"])
+    gStats = db.get("globalStats", {"totalLookups": 0, "successfulLookups": 0, "todayDate": "", "todayLookups": 0})
     todayStr = date.today().isoformat()
-    todayLookups = [l for l in db["lookups"] if l["ts"].startswith(todayStr)]
-    successfulLookups = [l for l in db["lookups"] if l["success"]]
+    totalLookups = gStats.get("totalLookups", 0)
     recentUsers = sorted(db["users"].values(), key=lambda u: u.get("lastSeen",""), reverse=True)[:5]
     return {
         "totalUsers": totalUsers,
         "totalLookups": totalLookups,
-        "todayLookups": len(todayLookups),
-        "successRate": round(len(successfulLookups) / totalLookups * 100, 1) if totalLookups else 0,
+        "todayLookups": gStats.get("todayLookups", 0) if gStats.get("todayDate") == todayStr else 0,
+        "successRate": round((gStats.get("successfulLookups", 0) / totalLookups) * 100, 1) if totalLookups else 0,
         "recentUsers": recentUsers,
-        "allLookups": db["lookups"],
+        "allLookups": db.get("recentLookups", []),
         "allUsers": db["users"],
     }
 
@@ -212,11 +244,12 @@ def adminDashboardKb(page=0):
     ])
 
 def force_sub_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Join Channel 1", url="https://t.me/flinsbots")],
-        [InlineKeyboardButton("Join Channel 2", url="https://t.me/devg4urav")],
-        [InlineKeyboardButton("✅ I have joined", callback_data="check_joined")]
-    ])
+    buttons = []
+    for i, ch in enumerate(CHANNELS, 1):
+        ch_name = ch.lstrip("@")
+        buttons.append([InlineKeyboardButton(f"Join Channel {i}", url=f"https://t.me/{ch_name}")])
+    buttons.append([InlineKeyboardButton("✅ I have joined", callback_data="check_joined")])
+    return InlineKeyboardMarkup(buttons)
 
 def result_keyboard(data):
     buttons = []
@@ -427,6 +460,7 @@ async def cmdStart(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 BotCommand("unban", "/unban <user_id>"),
                 BotCommand("addadmin", "/addadmin <user_id>"),
                 BotCommand("deladmin", "/deladmin <user_id>"),
+                BotCommand("promotion", "Broadcast message to all users"),
             ], scope=BotCommandScopeChat(u.id))
         else:
             await ctx.bot.set_my_commands([
@@ -461,7 +495,7 @@ async def cmdStats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<code>{'━'*26}</code>\n"
         f"💳 <b>Available Lookups</b>   <code>{s.get('balance', 0)}</code>\n"
         f"👥 <b>Total Referrals</b>     <code>{s.get('referrals', 0)}</code>\n"
-        f"� <b>Total Lookups</b>       <code>{s['total']}</code>\n"
+        f"🔍 <b>Total Lookups</b>       <code>{s['total']}</code>\n"
         f"📅 <b>Lookups Today</b>       <code>{s['today']}</code>\n"
         f"✅ <b>Successful</b>          <code>{s['successful']}</code>\n"
         f"⏱️ <b>Member Since</b>        <code>{joined}</code>\n"
@@ -758,14 +792,14 @@ async def cbAdminLookups(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     page = int(data.split("_")[-1]) if data.split("_")[-1].isdigit() else 0
 
     db = loadDb()
-    lookups = list(reversed(db["lookups"]))
+    lookups = list(reversed(db.get("recentLookups", [])))
     perPage = 5
     total = len(lookups)
     start = page * perPage
     end = start + perPage
     chunk = lookups[start:end]
 
-    lines = [f"<b>ALL LOOKUPS</b>  <i>(page {page+1})</i>\n<code>{'─'*28}</code>\n"]
+    lines = [f"<b>RECENT LOOKUPS</b>  <i>(page {page+1})</i>\n<code>{'─'*28}</code>\n"]
     for l in chunk:
         ts = l.get("ts","")[:16].replace("T"," ")
         lines.append(
@@ -795,15 +829,14 @@ async def cbAdminToday(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     db = loadDb()
     todayStr = date.today().isoformat()
-    todayLookups = [l for l in db["lookups"] if l["ts"].startswith(todayStr)]
-    uniqueUsers = len(set(l["userId"] for l in todayLookups))
-    successful = len([l for l in todayLookups if l["success"]])
+    gStats = db.get("globalStats", {})
+    todayTotal = gStats.get("todayLookups", 0) if gStats.get("todayDate") == todayStr else 0
+    
+    todayLookups = [l for l in db.get("recentLookups", []) if l.get("ts", "").startswith(todayStr)]
 
     lines = [f"<b>TODAY'S ACTIVITY</b>\n<code>{'─'*28}</code>\n"]
-    lines.append(f"\n<b>Total Lookups</b>   <code>{len(todayLookups)}</code>")
-    lines.append(f"<b>Unique Users</b>    <code>{uniqueUsers}</code>")
-    lines.append(f"<b>Successful</b>      <code>{successful}</code>")
-    lines.append(f"<b>Failed</b>          <code>{len(todayLookups)-successful}</code>\n")
+    lines.append(f"\n<b>Total Lookups Today</b>   <code>{todayTotal}</code>")
+    lines.append(f"<i>(Recent lookups details shown below)</i>\n")
     lines.append(f"<code>{'─'*28}</code>")
 
     for l in reversed(todayLookups[-10:]):
@@ -824,16 +857,14 @@ async def cbAdminRate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     db = loadDb()
-    total = len(db["lookups"])
-    successful = len([l for l in db["lookups"] if l["success"]])
+    gStats = db.get("globalStats", {})
+    total = gStats.get("totalLookups", 0)
+    successful = gStats.get("successfulLookups", 0)
     failed = total - successful
     rate = round(successful / total * 100, 1) if total else 0
 
-    topUsers = {}
-    for l in db["lookups"]:
-        uid = l.get("userId")
-        topUsers[uid] = topUsers.get(uid, 0) + 1
-    topSorted = sorted(topUsers.items(), key=lambda x: x[1], reverse=True)[:5]
+    users = list(db["users"].values())
+    topSorted = sorted(users, key=lambda x: x.get("totalLookups", 0), reverse=True)[:5]
 
     lines = [f"<b>SUCCESS RATE</b>\n<code>{'─'*28}</code>\n"]
     lines.append(f"\n<b>Total Lookups</b>   <code>{total}</code>")
@@ -842,10 +873,11 @@ async def cbAdminRate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines.append(f"<b>Success Rate</b>    <code>{rate}%</code>\n")
     lines.append(f"<code>{'─'*28}</code>")
     lines.append(f"\n<b>TOP USERS BY LOOKUPS</b>")
-    for uid, count in topSorted:
-        userInfo = db["users"].get(str(uid), {})
-        name = userInfo.get("firstName","?")
-        lines.append(f"<code>{name}</code>  <code>{count} lookups</code>")
+    for u in topSorted:
+        name = u.get("firstName", "?")
+        count = u.get("totalLookups", 0)
+        if count > 0:
+            lines.append(f"<code>{name}</code>  <code>{count} lookups</code>")
 
     await query.edit_message_text(
         "\n".join(lines),
@@ -858,7 +890,7 @@ async def cbAdminRecent(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     db = loadDb()
-    recent = list(reversed(db["lookups"][-20:]))
+    recent = list(reversed(db.get("recentLookups", [])[-20:]))
 
     lines = [f"<b>RECENT QUERIES</b>\n<code>{'─'*28}</code>\n"]
     for l in recent:
@@ -1006,7 +1038,7 @@ async def cbMyStats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<code>{'━'*26}</code>\n"
         f"💳 <b>Available Lookups</b>   <code>{s.get('balance', 0)}</code>\n"
         f"👥 <b>Total Referrals</b>     <code>{s.get('referrals', 0)}</code>\n"
-        f"� <b>Total Lookups</b>       <code>{s['total']}</code>\n"
+        f"🔍 <b>Total Lookups</b>       <code>{s['total']}</code>\n"
         f"📅 <b>Lookups Today</b>       <code>{s['today']}</code>\n"
         f"✅ <b>Successful</b>          <code>{s['successful']}</code>\n"
         f"⏱️ <b>Member Since</b>        <code>{joined}</code>\n"
@@ -1394,6 +1426,58 @@ async def receiveInput(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         saveDb(db)
     return
 
+async def cmdPromotion(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    db = loadDb()
+    if update.effective_user.id not in ADMIN_IDS and update.effective_user.id not in db.get("admins", []):
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "📢 <b>Promotion / Broadcast</b>\n\n"
+        "Please send the message (text, photo, video, etc.) you want to broadcast to all users.\n\n"
+        "Type /cancel to abort.",
+        parse_mode=ParseMode.HTML,
+        message_effect_id=random.choice(EFFECT_IDS)
+    )
+    return AWAIT_PROMO_MSG
+
+async def cancelPromo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Broadcast cancelled.")
+    return ConversationHandler.END
+
+async def bg_broadcast(msg, users, status_msg):
+    success = 0
+    failed = 0
+    for u in users:
+        try:
+            await msg.copy(chat_id=u["userId"])
+            success += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)  # Prevents Telegram flood limit errors
+        
+    try:
+        await status_msg.edit_text(
+            f"✅ <b>Broadcast Complete!</b>\n\n"
+            f"📨 Total Attempted: {len(users)}\n"
+            f"🟢 Success: {success}\n"
+            f"🔴 Failed: {failed}",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+async def receivePromoMsg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    db = loadDb()
+    users = list(db["users"].values())
+    
+    status_msg = await msg.reply_text(f"🚀 Starting background broadcast to {len(users)} users...\n\n<i>You can continue using the bot. You will be notified when it's done.</i>", parse_mode=ParseMode.HTML)
+    
+    # Run the broadcast in the background so it doesn't block the bot
+    asyncio.create_task(bg_broadcast(msg, users, status_msg))
+    
+    return ConversationHandler.END
+
 
 async def inlineQuery(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.inline_query.query.strip().lstrip("@")
@@ -1418,40 +1502,6 @@ async def inlineQuery(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def errorHandler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     log.error("Update %s caused error: %s", update, ctx.error)
 
-
-# ── Keep-alive server + self-ping ─────────────────────────────────────────────
-
-class PingHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        pass  # suppress access logs
-
-def startHealthServer():
-    port = int(os.getenv("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), PingHandler)
-    log.info("Health server on port %d", port)
-    server.serve_forever()
-
-def startSelfPing():
-    # Wait for server to start
-    time.sleep(15)
-    url = os.getenv("RENDER_EXTERNAL_URL", "")
-    if not url:
-        log.info("No RENDER_EXTERNAL_URL set — self-ping disabled")
-        return
-    log.info("Self-ping started → %s", url)
-    while True:
-        try:
-            urllib.request.urlopen(url, timeout=10)
-            log.info("Self-ping OK")
-        except Exception as e:
-            log.warning("Self-ping failed: %s", e)
-        time.sleep(300)  # ping every 5 minutes
-
-
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -1459,7 +1509,6 @@ def main():
         entry_points=[CommandHandler("admin", cmdAdmin)],
         states={
             AWAIT_ADMIN_PW:  [MessageHandler(filters.TEXT & ~filters.COMMAND, receiveAdminPw)],
-            AWAIT_MAINT_PW:  [MessageHandler(filters.TEXT & ~filters.COMMAND, receiveMaintPw)],
         },
         fallbacks=[CommandHandler("start", cmdStart)],
         allow_reentry=True,
@@ -1498,11 +1547,24 @@ def main():
         per_message=False,
     )
 
+    promoConv = ConversationHandler(
+        entry_points=[CommandHandler("promotion", cmdPromotion)],
+        states={
+            AWAIT_PROMO_MSG: [
+                CommandHandler("cancel", cancelPromo),
+                MessageHandler(filters.ALL & ~filters.COMMAND, receivePromoMsg)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancelPromo)],
+        allow_reentry=True,
+    )
+
     app.add_error_handler(errorHandler)
     app.add_handler(adminConv)
     app.add_handler(maintConv)
     app.add_handler(addAdminConv)
     app.add_handler(delAdminConv)
+    app.add_handler(promoConv)
     app.add_handler(CommandHandler("start", cmdStart))
     app.add_handler(CommandHandler("stats", cmdStats))
     app.add_handler(CommandHandler("apistatus", cmdApiStatus))
@@ -1524,11 +1586,6 @@ def main():
     app.add_handler(CallbackQueryHandler(cbAdminRecent,    pattern="^adm_recent$"))
     app.add_handler(CallbackQueryHandler(cbAdminClose,     pattern="^adm_close$"))
     app.add_handler(MessageHandler((filters.TEXT | filters.FORWARDED) & ~filters.COMMAND, receiveInput))
-
-    # Start keep-alive health server
-    threading.Thread(target=startHealthServer, daemon=True).start()
-    # Start self-ping to prevent Render free tier spin-down
-    threading.Thread(target=startSelfPing, daemon=True).start()
 
     log.info("Bot running")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
