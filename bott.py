@@ -441,6 +441,8 @@ async def fetchUserInfo(query):
 
 
 async def cmdStart(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log.info(f"👉 Received /start command from {update.effective_user.first_name}")
+
     u = update.effective_user
     args = ctx.args
     referrer_id = str(args[0]) if args and args[0].isdigit() else None
