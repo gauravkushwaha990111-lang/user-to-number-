@@ -41,7 +41,7 @@ BOT_TOKEN        = os.getenv("BOT_TOKEN", "")
 INFO_BOT_TOKEN   = os.getenv("INFO_BOT_TOKEN", "")
 ADMIN_PASS_HASH  = hashlib.sha256(os.getenv("ADMIN_PASSWORD", "admin").encode()).hexdigest()
 MAINT_PASS_HASH  = hashlib.sha256(os.getenv("MAINT_PASSWORD", "maint").encode()).hexdigest()
-MONGO_URI        = os.getenv("MONGO_URI", "mongodb+srv://rdp96869_db_user:3TgbDUDy9yE66fTP@usertonumber.k7gpo0m.mongodb.net/?appName=usertonumber")
+MONGO_URI        = os.getenv("MONGO_URI", "")
 
 # ── Your TGOSINT API ──────────────────────────────────────────────────────────
 TGOSINT_URL = os.getenv("TGOSINT_URL", "https://tgosint.vercel.app/")
@@ -90,7 +90,14 @@ if MONGO_URI:
         log.error(f"MongoDB Connection Error: {e}")
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Cache database in memory to prevent blocking the async event loop
+_db_cache = None
+
 def loadDb():
+    global _db_cache
+    if _db_cache is not None:
+        return _db_cache
+
     data = None
     if db_collection is not None:
         try:
@@ -119,24 +126,34 @@ def loadDb():
     if "recentLookups" not in data: data["recentLookups"] = []
     if "globalStats" not in data: data["globalStats"] = {"totalLookups": 0, "successfulLookups": 0, "todayDate": date.today().isoformat(), "todayLookups": 0}
     
+    _db_cache = data
     return data
 
-def saveDb(data):
-    if db_collection is not None:
-        try:
+def _bg_save_task(data_str):
+    try:
+        data = json.loads(data_str)
+        if db_collection is not None:
             data["_id"] = "bot_db"
             db_collection.replace_one({"_id": "bot_db"}, data, upsert=True)
-        except Exception as e:
-            log.error(f"MongoDB Save Error: {e}")
             
-    # Local backup just in case
-    try:
         with open(DB_FILE, "w") as f:
             d_copy = data.copy()
             if "_id" in d_copy: del d_copy["_id"]
             json.dump(d_copy, f, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"Background Save Error: {e}")
+
+def saveDb(data):
+    global _db_cache
+    _db_cache = data
+    try:
+        # Serialize memory data to prevent blocking and modification errors
+        d_copy = data.copy()
+        if "_id" in d_copy: del d_copy["_id"]
+        data_str = json.dumps(d_copy)
+        threading.Thread(target=_bg_save_task, args=(data_str,), daemon=True).start()
+    except Exception as e:
+        log.error(f"SaveDb dispatch error: {e}")
 
 def registerUser(userId, username, firstName, referrerId=None):
     db = loadDb()
@@ -1652,7 +1669,7 @@ def main():
     app.add_handler(MessageHandler((filters.TEXT | filters.FORWARDED) & ~filters.COMMAND, receiveInput))
 
     log.info("Bot running")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     os._exit(0)
 
 
