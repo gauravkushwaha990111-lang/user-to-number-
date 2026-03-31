@@ -2,20 +2,7 @@
 
 echo "TG to Num Bot starting..."
 
-
-# /data directory check karo, agar nahi hai toh banao
-if [ ! -d "/data" ]; then
-    mkdir -p /data
-fi
-
-# config.json create karo aur content likho
-cat > /data/config.json <<EOL
-{
-    "id": "000"
-}
-EOL
-
-echo "config.json successfully created in /data"
+python bott.py
 
 # python3 bott.py
 #while true
