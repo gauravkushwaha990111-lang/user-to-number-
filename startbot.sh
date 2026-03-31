@@ -1,6 +1,7 @@
 #!/bin/sh
 
 echo "TG to Num Bot starting..."
+ls
 
 while true
 do
