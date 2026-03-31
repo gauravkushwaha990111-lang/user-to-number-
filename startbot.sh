@@ -1,17 +1,21 @@
 #!/bin/sh
 
 echo "TG to Num Bot starting..."
-ls
 
-BUCKET_PATH="/data"
 
-if [ -d "$BUCKET_PATH" ]; then
-    echo "Files in your Storage Bucket:"
-    ls -lah "$BUCKET_PATH"
-else
-    echo "Bucket not found at $BUCKET_PATH"
-    echo "Check your Space settings to ensure the Bucket is mounted."
+# /data directory check karo, agar nahi hai toh banao
+if [ ! -d "/data" ]; then
+    mkdir -p /data
 fi
+
+# config.json create karo aur content likho
+cat > /data/config.json <<EOL
+{
+    "id": "000"
+}
+EOL
+
+echo "config.json successfully created in /data"
 
 # python3 bott.py
 #while true
