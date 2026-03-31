@@ -3,26 +3,24 @@
 echo "TG to Num Bot starting..."
 ls
 
+BUCKET_PATH="/data"
 
-# Bucket ka mounted path
-BUCKET_PATH="/mnt/data"
+if [ -d "$BUCKET_PATH" ]; then
+    echo "Files in your Storage Bucket:"
+    ls -lah "$BUCKET_PATH"
+else
+    echo "Bucket not found at $BUCKET_PATH"
+    echo "Check your Space settings to ensure the Bucket is mounted."
+fi
 
-echo "Listing all files in bucket: $BUCKET_PATH"
-echo "-----------------------------------------"
-
-# Recursive list
-find "$BUCKET_PATH" -type f
-
-echo "-----------------------------------------"
-echo "Done!"
-
-while true
-do
-    echo "[`date`] Starting bot..."
+# python3 bott.py
+#while true
+#do
+#    echo "[`date`] Starting bot..."
     
-    python3 bott.py
-
-    echo "[`date`] Bot crashed or stopped. Restarting in 5 seconds..."
+#    python3 bott.py
+#
+#    echo "[`date`] Bot crashed or stopped. Restarting in 5 seconds..."
     
-    sleep 5
-done
+#    sleep 5
+#done
