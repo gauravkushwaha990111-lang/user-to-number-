@@ -35,6 +35,14 @@ from telegram.ext import ( # type: ignore
 )
 from telegram.constants import ParseMode, ChatMemberStatus, ChatAction  # type: ignore
 
+
+from flaskSrvr import run_flask
+
+t = threading.Thread(target=run_flask)
+t.daemon = True
+t.start()
+
+
 load_dotenv()
 
 BOT_TOKEN        = os.getenv("BOT_TOKEN", "")
